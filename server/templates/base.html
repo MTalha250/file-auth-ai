@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}FileAuthAI{% endblock %}</title>
+    {% block extra_css %}{% endblock %}
+  </head>
+  <body>
+    <header>
+      <nav>
+        <h1>FileAuthAI</h1>
+        {% block nav %}{% endblock %}
+      </nav>
+    </header>
+
+    <main>
+      {% block content %}
+      <h2>Welcome to FileAuthAI</h2>
+      <p>This is the base template.</p>
+      {% endblock %}
+    </main>
+
+    <footer>
+      <p>&copy; 2024 FileAuthAI. All rights reserved.</p>
+    </footer>
+
+    {% block extra_js %}{% endblock %}
+  </body>
+</html>
