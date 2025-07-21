@@ -39,12 +39,15 @@ class CategorySchema(models.Model):
         verbose_name_plural = "Category Schemas"
         ordering = ['-created_at']
 
-
 class MLReferenceFile(models.Model):
     ml_reference_id = models.CharField(max_length=50, unique=True)
     file = CloudinaryField('reference_file')
     file_name = models.CharField(max_length=255)
-    category = models.CharField(max_length=100)
+    category = models.ForeignKey(
+        CategorySchema,
+        on_delete=models.CASCADE,
+        related_name='ml_reference_files'
+    )
     description = models.TextField()
     reasoning_notes = models.TextField(
         help_text="Why this file is a good reference for this category"
@@ -61,7 +64,7 @@ class MLReferenceFile(models.Model):
     uploaded_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
-        return f"{self.ml_reference_id} - {self.category}"
+        return f"{self.ml_reference_id} - {self.category.category_name}"
     
     class Meta:
         verbose_name = "ML Reference File"

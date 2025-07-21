@@ -64,10 +64,11 @@ class CategorySchemaAdmin(ModelAdmin):
 # MLReferenceFile admin
 @admin.register(MLReferenceFile)
 class MLReferenceFileAdmin(ModelAdmin):
-    list_display = ('ml_reference_id', 'file_name', 'category', 'uploaded_at')
-    search_fields = ('ml_reference_id', 'file_name')
-    list_filter = ('category', 'uploaded_at')
+    list_display = ('ml_reference_id', 'file_name', 'category_name', 'uploaded_at')
+    search_fields = ('ml_reference_id', 'file_name', 'category__category_name')
+    list_filter = ('category__category_name', 'uploaded_at')
     readonly_fields = ('uploaded_at',)
+    autocomplete_fields = ['category', 'uploaded_by']
     fieldsets = (
         (None, {
             'fields': (
@@ -86,7 +87,11 @@ class MLReferenceFileAdmin(ModelAdmin):
         }),
     )
     list_display_links = ['ml_reference_id']
-    raw_id_fields = ['uploaded_by']
+
+    def category_name(self, obj):
+        """Display the category name in list view."""
+        return obj.category.category_name
+    category_name.short_description = 'Category'
 
 # SubmittedFile admin
 @admin.register(SubmittedFile)
@@ -97,7 +102,11 @@ class SubmittedFileAdmin(ModelAdmin):
     )
     search_fields = ('case_id', 'file_name')
     list_filter = ('category', 'final_category', 'match', 'status', 'uploaded_at')
-    readonly_fields = ('uploaded_at', 'processed_at')
+    readonly_fields = (
+        'case_id', 'file_name', 'file', 'category', 'final_category',
+        'accuracy_score', 'match', 'extracted_fields', 'uploaded_by',
+        'status', 'error_message', 'uploaded_at', 'processed_at'
+    )
     fieldsets = (
         (None, {
             'fields': (
@@ -120,6 +129,14 @@ class SubmittedFileAdmin(ModelAdmin):
     )
     list_display_links = ['case_id']
     raw_id_fields = ['uploaded_by']
+
+    def has_add_permission(self, request):
+        """Prevent admins from creating SubmittedFile records."""
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        """Prevent admins from editing SubmittedFile records."""
+        return False
 
 # AuditLog admin
 @admin.register(AuditLog)
