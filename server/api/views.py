@@ -19,6 +19,7 @@ from .models import (
     AuditLog,
     CategorySchema
 )
+from .serializers import CategorySchemaSerializer
 
 
 # AUTHENTICATION VIEWS
@@ -176,6 +177,14 @@ def submit_file(request):
 
 
 #  ML REFERENCE UPLOAD 
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def category_list(request):
+    categories = CategorySchema.objects.all()
+    serializer = CategorySchemaSerializer(categories, many=True)
+    return Response(serializer.data)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
@@ -185,40 +194,40 @@ def upload_ml_reference(request):
             return Response({"error": "Unauthorized"}, status=403)
 
         ml_reference_id = request.data.get('ml_reference_id') or str(uuid.uuid4())
-        category = request.data.get('category')
+        category_name = request.data.get('category')
         description = request.data.get('description')
         reasoning_notes = request.data.get('reasoning_notes')
         metadata = request.data.get('metadata')  # Should be JSON string or dict
         file_obj = request.FILES.get('file')
         file_name = request.data.get('file_name')
 
-        if not all([category, description, reasoning_notes, file_obj, file_name]):
+        if not all([category_name, description, reasoning_notes, file_obj, file_name]):
             return Response({"error": "Missing required fields."}, status=400)
 
         upload_result = cloudinary_upload(file_obj)
         cloudinary_url = upload_result.get('secure_url')
 
+        category_obj, _ = CategorySchema.objects.get_or_create(
+            category_name=category_name,
+            defaults={"description": description or "", "expected_fields": []}
+        )
+
         reference = MLReferenceFile.objects.create(
             ml_reference_id=ml_reference_id,
             file=cloudinary_url,
             file_name=file_name,
-            category=category,
+            category=category_obj,
             description=description,
             reasoning_notes=reasoning_notes,
             metadata=metadata or {},
             uploaded_by=request.user
         )
 
-        CategorySchema.objects.get_or_create(
-            category_name=category,
-            defaults={"description": description, "expected_fields": []}
-        )
-
         AuditLog.objects.create(
             action='upload',
             user=request.user,
             ml_reference_file=reference,
-            details={"category": category},
+            details={"category": category_name},
             ip_address=request.META.get('REMOTE_ADDR'),
             user_agent=request.META.get('HTTP_USER_AGENT')
         )

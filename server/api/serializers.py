@@ -20,6 +20,10 @@ class CategorySchemaSerializer(serializers.ModelSerializer):
 
 class MLReferenceFileSerializer(serializers.ModelSerializer):
     uploaded_by = UserSerializer(read_only=True)
+    category = serializers.SlugRelatedField(
+        slug_field='category_name',
+        queryset=CategorySchema.objects.all()
+    )
     class Meta:
         model = MLReferenceFile
         fields = [
