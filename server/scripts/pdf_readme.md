@@ -1,7 +1,7 @@
 ## PDF Text Extraction Pipeline
 
 A Python pipeline that extracts text from PDFs using a hybrid approach combining native text extraction with OCR for maximum text recovery.
-
+  
 
 
 ## Quick Setup
@@ -10,23 +10,25 @@ A Python pipeline that extracts text from PDFs using a hybrid approach combining
 3. Run!
 
 
-
+  
 ## Usage
 
 from main import PDFTextExtractor
 
-# Initialize
+- Initialize
+  
 extractor = PDFTextExtractor(
     tesseract_path=r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 )
 
-# Process PDF
+- Process PDF
+  
 results = extractor.process_pdf("document.pdf")
 output_file = extractor.save_extracted_text(results)
 
 
 (also refer to provided sample main to know more)
-
+  
 
 
 ## Processing Pipeline
@@ -48,29 +50,22 @@ output_file = extractor.save_extracted_text(results)
 8. Output Generation: Combines all extraction methods into structured text file with detailed extraction report and source identification
 
 
+  
+## Output Format  
 
-## Output Format
+(Creates a txt file)  
 
-PDF TEXT EXTRACTION REPORT
-Source PDF: document.pdf
-Total Pages: 3
-Images Found: 5
-Total Characters: 8,421
-================================================================================
-
-=== PAGE 1 ===
-[Native text content...]
-[IMAGE 1]
-[OCR text from image...]
-==================================================
-
-
+PDF TEXT EXTRACTION REPORT  
+Source PDF: sample.pdf  
+Total pages: 3  
+Images Found 8,421  
+  
 
 ## Requirements
-numpy==2.2.6
-opencv-python==4.12.0.88
-packaging==25.0
-pdf2image==1.17.0
-pillow==11.3.0
-PyMuPDF==1.26.3
+numpy==2.2.6  
+opencv-python==4.12.0.88  
+packaging==25.0  
+pdf2image==1.17.0  
+pillow==11.3.0  
+PyMuPDF==1.26.3  
 pytesseract==0.3.13
