@@ -1,13 +1,13 @@
 import fitz  # PyMuPDF
-import pytesseract
 from PIL import Image
-import cv2
-import numpy as np
 import os
 import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 import io
+
+# Import EasyOCR extractor from image.py
+from image import EasyOCRExtractor
 
 
 class PDFTextExtractor:
@@ -16,27 +16,42 @@ class PDFTextExtractor:
     with OCR-based image text detection.
     """
     
-    def __init__(self, tesseract_path: Optional[str] = None, output_dir: str = "extracted_texts"):
+    def __init__(self, output_dir: str = "extracted_texts", use_easyocr: bool = True):
         """
         Initialize the PDF text extractor.
         
         Args:
-            tesseract_path: Path to tesseract executable (if not in PATH)
             output_dir: Directory to save extracted text files
+            use_easyocr: Whether to use EasyOCR via imported image.py class
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
         
-        # Configure tesseract path if provided
-        if tesseract_path:
-            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        self.temp_images_dir = self.output_dir / "temp_images"
+        self.temp_images_dir.mkdir(exist_ok=True)
         
-        # Setup logging
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
+        
+        self.use_easyocr = use_easyocr
+        self.easyocr_extractor = None
+        
+        if self.use_easyocr:
+            try:
+                self.logger.info("Initializing EasyOCR from image.py...")
+                self.easyocr_extractor = EasyOCRExtractor(enable_gpu=True)
+                self.logger.info("EasyOCR initialized successfully with GPU")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize EasyOCR with GPU, trying CPU: {e}")
+                try:
+                    self.easyocr_extractor = EasyOCRExtractor(enable_gpu=False)
+                    self.logger.info("EasyOCR initialized successfully with CPU")
+                except Exception as e2:
+                    self.logger.error(f"Failed to initialize EasyOCR: {e2}")
+                    self.use_easyocr = False
     
     def diagnose_pdf(self, pdf_path: str) -> Dict[str, any]:
         """
@@ -135,17 +150,13 @@ class PDFTextExtractor:
         for page_num in range(len(pdf_document)):
             page = pdf_document[page_num]
             
-            # Extract text with position information
             text_dict = page.get_text("dict")
-            
-            # Also get simple text for fallback
             simple_text = page.get_text("text")
             
-            # Process text blocks to get position information
             text_blocks = []
             
             for block in text_dict.get("blocks", []):
-                if "lines" in block:  # Text block
+                if "lines" in block:
                     block_text = ""
                     for line in block["lines"]:
                         for span in line["spans"]:
@@ -155,7 +166,7 @@ class PDFTextExtractor:
                     if block_text.strip():
                         text_blocks.append({
                             "text": block_text.strip(),
-                            "bbox": block["bbox"],  # (x0, y0, x1, y1)
+                            "bbox": block["bbox"],
                             "type": "text"
                         })
             
@@ -188,51 +199,48 @@ class PDFTextExtractor:
             page = pdf_document[page_num]
             page_images = []
             
-            # Method 1: Extract images using get_images()
             image_list = page.get_images(full=True)
             self.logger.info(f"Page {page_num + 1}: Found {len(image_list)} images using get_images()")
             
             for img_index, img in enumerate(image_list):
                 try:
-                    # Get image data
                     xref = img[0]
                     base_image = pdf_document.extract_image(xref)
                     image_bytes = base_image["image"]
                     
-                    # Filter out tiny images (likely decorative elements)
-                    if len(image_bytes) < 1000:  # Skip very small images
+                    if len(image_bytes) < 1000:
                         self.logger.debug(f"Skipping tiny image {img_index + 1} on page {page_num + 1} (size: {len(image_bytes)} bytes)")
                         continue
                     
-                    # Convert to PIL Image
                     image = Image.open(io.BytesIO(image_bytes))
                     
-                    # Filter out very small images by dimensions
                     if image.width < 50 or image.height < 50:
                         self.logger.debug(f"Skipping small image {img_index + 1} on page {page_num + 1} (dimensions: {image.width}x{image.height})")
                         continue
                     
-                    # Get image position on the page
+                    image_filename = f"page_{page_num + 1}_image_{img_index + 1}.png"
+                    image_path = self.temp_images_dir / image_filename
+                    image.save(image_path, "PNG")
+                    self.logger.info(f"Saved image to: {image_path}")
+                    
                     img_bbox = None
                     try:
-                        # Find image position using transformation matrix
                         for item in page.get_images(full=True):
                             if item[0] == xref:
-                                # Get image rect
                                 img_rects = page.get_image_rects(item)
                                 if img_rects:
-                                    img_bbox = img_rects[0]  # Use first rect if multiple
+                                    img_bbox = img_rects[0]
                                 break
                     except:
-                        # Fallback: estimate position (top of page)
                         img_bbox = fitz.Rect(0, 0, image.width, image.height)
                     
                     image_data = {
-                        "image": image,
+                        "image_path": str(image_path),
                         "bbox": img_bbox,
                         "index": img_index + 1,
                         "size": (image.width, image.height),
-                        "type": "image"
+                        "type": "image",
+                        "filename": image_filename
                     }
                     
                     page_images.append(image_data)
@@ -246,216 +254,29 @@ class PDFTextExtractor:
         
         return all_images
     
-    def preprocess_image_for_ocr(self, image: Image.Image) -> Image.Image:
+    def extract_text_using_easyocr(self, image_path: str) -> Dict[str, any]:
         """
-        Enhanced image preprocessing to improve OCR accuracy.
+        Extract text from image using imported EasyOCRExtractor from image.py.
         
         Args:
-            image: PIL Image object
+            image_path: Path to the image file
             
         Returns:
-            Preprocessed PIL Image
+            Dictionary containing OCR results
         """
-        try:
-            # Convert to RGB if necessary
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # Convert PIL to OpenCV format
-            opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-            
-            # Convert to grayscale
-            gray = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2GRAY)
-            
-            # Apply multiple preprocessing techniques and return the best one
-            processed_images = []
-            
-            # Method 1: Basic preprocessing
-            denoised = cv2.medianBlur(gray, 3)
-            thresh1 = cv2.adaptiveThreshold(
-                denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-            )
-            processed_images.append(('adaptive_thresh', Image.fromarray(thresh1)))
-            
-            # Method 2: OTSU thresholding
-            _, thresh2 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            processed_images.append(('otsu_thresh', Image.fromarray(thresh2)))
-            
-            # Method 3: Simple thresholding
-            _, thresh3 = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-            processed_images.append(('simple_thresh', Image.fromarray(thresh3)))
-            
-            # Method 4: Enhanced contrast
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            enhanced = clahe.apply(gray)
-            _, thresh4 = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            processed_images.append(('enhanced_contrast', Image.fromarray(thresh4)))
-            
-            # Method 5: Morphological operations
-            kernel = np.ones((2,2), np.uint8)
-            morph = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
-            _, thresh5 = cv2.threshold(morph, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            processed_images.append(('morphological', Image.fromarray(thresh5)))
-            
-            # Return the adaptive threshold as default (usually works well)
-            return processed_images[0][1]
-            
-        except Exception as e:
-            self.logger.warning(f"Image preprocessing failed: {e}, using original image")
-            return image
-    
-    def extract_text_from_image(self, image: Image.Image) -> str:
-        """
-        Extract text from image using Tesseract OCR with multiple approaches.
+        if not self.use_easyocr or self.easyocr_extractor is None:
+            return {'text': '', 'confidence': 0, 'error': 'EasyOCR not available'}
         
-        Args:
-            image: PIL Image object
-            
-        Returns:
-            Extracted text string
-        """
         try:
-            # Test if Tesseract is available
-            try:
-                version = pytesseract.get_tesseract_version()
-                self.logger.debug(f"Using Tesseract version: {version}")
-            except Exception as e:
-                self.logger.error(f"Tesseract not available: {e}")
-                return ""
+            # Use the exact same method from your image.py
+            result = self.easyocr_extractor.extract_text(str(image_path))
             
-            all_results = []
+            self.logger.info(f"EasyOCR extracted {len(result.get('text', ''))} characters from {Path(image_path).name} (confidence: {result.get('confidence', 0):.2f})")
+            return result
             
-            # Try 1: Original image with different PSM modes
-            original_configs = [
-                ('original_psm6', r'--oem 3 --psm 6'),
-                ('original_psm7', r'--oem 3 --psm 7'),
-                ('original_psm8', r'--oem 3 --psm 8'),
-                ('original_psm11', r'--oem 3 --psm 11'),
-                ('original_psm13', r'--oem 3 --psm 13')
-            ]
-            
-            for name, config in original_configs:
-                try:
-                    text = pytesseract.image_to_string(image, config=config).strip()
-                    if text:
-                        all_results.append((name, text, len(text)))
-                        self.logger.debug(f"{name}: extracted {len(text)} characters")
-                except Exception as e:
-                    self.logger.debug(f"{name} failed: {e}")
-            
-            # Try 2: Preprocessed images
-            try:
-                # Convert to RGB if necessary
-                if image.mode != 'RGB':
-                    rgb_image = image.convert('RGB')
-                else:
-                    rgb_image = image
-                
-                # Convert to numpy array
-                img_array = np.array(rgb_image)
-                
-                # Try different preprocessing approaches
-                preprocessing_methods = [
-                    ('grayscale', self._to_grayscale),
-                    ('threshold_otsu', self._apply_otsu_threshold),
-                    ('threshold_adaptive', self._apply_adaptive_threshold),
-                    ('enhance_contrast', self._enhance_contrast),
-                    ('remove_noise', self._remove_noise),
-                    ('resize_2x', self._resize_image),
-                ]
-                
-                for method_name, method_func in preprocessing_methods:
-                    try:
-                        processed_img = method_func(img_array)
-                        processed_pil = Image.fromarray(processed_img)
-                        
-                        # Try OCR with different configs
-                        configs = [r'--oem 3 --psm 6', r'--oem 3 --psm 7', r'--oem 3 --psm 11']
-                        for config in configs:
-                            try:
-                                text = pytesseract.image_to_string(processed_pil, config=config).strip()
-                                if text:
-                                    all_results.append((f"{method_name}_{config.split()[-1]}", text, len(text)))
-                                    self.logger.debug(f"{method_name} with {config}: extracted {len(text)} characters")
-                            except:
-                                continue
-                                
-                    except Exception as e:
-                        self.logger.debug(f"Preprocessing method {method_name} failed: {e}")
-                        continue
-            
-            except Exception as e:
-                self.logger.warning(f"Preprocessing attempts failed: {e}")
-            
-            # Try 3: Scale the image up (sometimes helps with small text)
-            try:
-                # Scale up by 2x
-                width, height = image.size
-                scaled_image = image.resize((width * 2, height * 2), Image.LANCZOS)
-                
-                configs = [r'--oem 3 --psm 6', r'--oem 3 --psm 7']
-                for config in configs:
-                    try:
-                        text = pytesseract.image_to_string(scaled_image, config=config).strip()
-                        if text:
-                            all_results.append((f"scaled_{config.split()[-1]}", text, len(text)))
-                            self.logger.debug(f"Scaled image with {config}: extracted {len(text)} characters")
-                    except:
-                        continue
-                        
-            except Exception as e:
-                self.logger.debug(f"Image scaling failed: {e}")
-            
-            # Return the longest text found
-            if all_results:
-                best_result = max(all_results, key=lambda x: x[2])
-                self.logger.info(f"Best OCR result from method '{best_result[0]}': {best_result[2]} characters")
-                return best_result[1]
-            else:
-                self.logger.info("No text extracted from image with any method")
-                return ""
-                
         except Exception as e:
-            self.logger.error(f"All OCR attempts failed: {e}")
-            return ""
-    
-    def _to_grayscale(self, img_array):
-        """Convert image to grayscale."""
-        if len(img_array.shape) == 3:
-            return cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        return img_array
-    
-    def _apply_otsu_threshold(self, img_array):
-        """Apply OTSU thresholding."""
-        gray = self._to_grayscale(img_array)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return thresh
-    
-    def _apply_adaptive_threshold(self, img_array):
-        """Apply adaptive thresholding."""
-        gray = self._to_grayscale(img_array)
-        return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    
-    def _enhance_contrast(self, img_array):
-        """Enhance image contrast."""
-        gray = self._to_grayscale(img_array)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray)
-        _, thresh = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return thresh
-    
-    def _remove_noise(self, img_array):
-        """Remove noise from image."""
-        gray = self._to_grayscale(img_array)
-        denoised = cv2.medianBlur(gray, 3)
-        _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return thresh
-    
-    def _resize_image(self, img_array):
-        """Resize image by 2x."""
-        height, width = img_array.shape[:2]
-        resized = cv2.resize(img_array, (width * 2, height * 2), interpolation=cv2.INTER_CUBIC)
-        return self._to_grayscale(resized)
+            self.logger.error(f"EasyOCR failed for image {image_path}: {e}")
+            return {'text': '', 'confidence': 0, 'error': str(e)}
     
     def combine_text_and_images_by_position(self, page_text_data: Dict, page_images: List[Dict]) -> List[Dict]:
         """
@@ -470,22 +291,20 @@ class PDFTextExtractor:
         """
         content_blocks = []
         
-        # Add text blocks
         for text_block in page_text_data.get("text_blocks", []):
             content_blocks.append({
                 "type": "text",
                 "content": text_block["text"],
                 "bbox": text_block["bbox"],
-                "y_position": text_block["bbox"][1]  # y0 coordinate for sorting
+                "y_position": text_block["bbox"][1]
             })
         
-        # Add image blocks (with OCR text if available)
         for img_data in page_images:
             bbox = img_data.get("bbox")
             if bbox:
                 y_pos = bbox.y0 if hasattr(bbox, 'y0') else bbox[1] if isinstance(bbox, (list, tuple)) else 0
             else:
-                y_pos = 0  # Default to top if no position info
+                y_pos = 0
             
             content_blocks.append({
                 "type": "image",
@@ -494,7 +313,6 @@ class PDFTextExtractor:
                 "y_position": y_pos
             })
         
-        # Sort by vertical position (top to bottom)
         content_blocks.sort(key=lambda x: x["y_position"])
         
         return content_blocks
@@ -513,14 +331,13 @@ class PDFTextExtractor:
         try:
             from pdf2image import convert_from_path
             
-            # Convert PDF pages to images
             images = convert_from_path(pdf_path, dpi=300)
             page_texts = []
             
             for i, image in enumerate(images):
-                text = self.extract_text_from_image(image)
+                text = ""
                 page_texts.append(text)
-                self.logger.info(f"Extracted OCR text from PDF page {i + 1} (as image)")
+                self.logger.info(f"Fallback OCR for PDF page {i + 1} (as image) - currently disabled")
             
             return page_texts
             
@@ -554,30 +371,24 @@ class PDFTextExtractor:
         }
         
         try:
-            # Run diagnostics first if requested
             if diagnose:
                 self.logger.info("Running PDF diagnostics...")
                 diagnosis = self.diagnose_pdf(pdf_path)
                 results['diagnosis'] = diagnosis
                 
-                # Log summary
                 total_images = sum(page['image_count'] for page in diagnosis.get('page_details', []))
                 self.logger.info(f"Diagnosis complete: {diagnosis.get('total_pages', 0)} pages, {total_images} total images detected")
             
-            # Open PDF document
             pdf_document = fitz.open(pdf_path)
             results['total_pages'] = len(pdf_document)
             
-            # Extract native text with position information
             self.logger.info("Extracting native text...")
             native_texts = self.extract_native_text(pdf_document)
             results['native_text'] = native_texts
             
-            # Extract images and perform OCR with position information
             self.logger.info("Extracting images and performing OCR...")
             page_images = self.extract_images_from_pdf(pdf_document)
             
-            # Process each page to maintain reading order
             ordered_content = []
             total_images = 0
             
@@ -587,42 +398,41 @@ class PDFTextExtractor:
                 
                 self.logger.info(f"Processing {page_image_count} images from page {page_num + 1}")
                 
-                # Process images and extract OCR text
                 processed_images = []
                 for img_idx, image_data in enumerate(images):
                     try:
-                        image = image_data["image"]
-                        self.logger.info(f"Starting OCR for image {img_idx + 1} on page {page_num + 1} (size: {image.size})")
+                        image_path = image_data["image_path"]
+                        self.logger.info(f"Starting EasyOCR for image {img_idx + 1} on page {page_num + 1} at {image_path}")
                         
-                        # Try enhanced OCR without debug output
-                        ocr_text = self.extract_text_from_image(image)
+                        if self.use_easyocr:
+                            ocr_result = self.extract_text_using_easyocr(image_path)
+                            ocr_text = ocr_result.get('text', '')
+                            confidence = ocr_result.get('confidence', 0)
+                        else:
+                            ocr_text = ""
+                            confidence = 0
                         
-                        # Add OCR text to image data
                         image_data["ocr_text"] = ocr_text
+                        image_data["ocr_confidence"] = confidence
                         processed_images.append(image_data)
                         
                         if ocr_text.strip():
-                            self.logger.info(f"✅ Extracted {len(ocr_text)} characters from image {img_idx + 1} on page {page_num + 1}")
+                            self.logger.info(f"EasyOCR extracted {len(ocr_text)} characters from image {img_idx + 1} on page {page_num + 1} (confidence: {confidence:.2f})")
                         else:
-                            self.logger.warning(f"❌ No text found in image {img_idx + 1} on page {page_num + 1}")
+                            self.logger.warning(f"No text found in image {img_idx + 1} on page {page_num + 1}")
                             
-                            # For debugging, save problematic image only if needed
-                            if page_num == 0 and img_idx == 0:  # Only for first image to avoid spam
-                                self.logger.debug("First image had no OCR results - this may indicate OCR configuration issues")
-                                    
                     except Exception as e:
-                        self.logger.error(f"OCR failed for image {img_idx + 1} on page {page_num + 1}: {e}")
+                        self.logger.error(f"EasyOCR failed for image {img_idx + 1} on page {page_num + 1}: {e}")
                         image_data["ocr_text"] = ""
+                        image_data["ocr_confidence"] = 0
                         processed_images.append(image_data)
                 
-                # Combine text and images by position for this page
                 if page_num < len(native_texts):
                     page_content = self.combine_text_and_images_by_position(
                         native_texts[page_num], processed_images
                     )
                     ordered_content.append(page_content)
                 else:
-                    # Page with only images
                     ordered_content.append([{
                         "type": "image",
                         "content": img_data,
@@ -633,10 +443,8 @@ class PDFTextExtractor:
             results['ordered_content'] = ordered_content
             results['images_found'] = total_images
             
-            # Close the PDF document
             pdf_document.close()
             
-            # Fallback: Use full-page OCR if native text extraction yields poor results
             if use_fallback_ocr:
                 total_native_chars = 0
                 for page_data in native_texts:
@@ -645,12 +453,11 @@ class PDFTextExtractor:
                     else:
                         total_native_chars += len(str(page_data))
                 
-                if total_native_chars < 100:  # Threshold for "poor" native extraction
+                if total_native_chars < 100:
                     self.logger.info("Native text extraction yielded minimal results. Using full-page OCR...")
                     fallback_texts = self.extract_text_from_pdf_as_images(pdf_path)
                     results['fallback_ocr_text'] = fallback_texts
             
-            # Combine all extracted text
             combined_text = self._combine_extracted_text(results)
             results['combined_text'] = combined_text
             
@@ -674,7 +481,6 @@ class PDFTextExtractor:
         """
         combined_parts = []
         
-        # Use ordered content if available (new method)
         if 'ordered_content' in results and results['ordered_content']:
             for page_num, page_content in enumerate(results['ordered_content']):
                 if not page_content:
@@ -688,41 +494,36 @@ class PDFTextExtractor:
                     elif block["type"] == "image":
                         img_data = block["content"]
                         ocr_text = img_data.get("ocr_text", "")
+                        confidence = img_data.get("ocr_confidence", 0)
                         if ocr_text.strip():
-                            combined_parts.append(f"\n[IMAGE {img_data.get('index', '?')}]")
+                            combined_parts.append(f"\n[IMAGE {img_data.get('index', '?')} - EasyOCR Confidence: {confidence:.2f}]")
                             combined_parts.append(ocr_text)
                         else:
-                            combined_parts.append(f"\n[IMAGE {img_data.get('index', '?')} - No text detected]")
+                            combined_parts.append(f"\n[IMAGE {img_data.get('index', '?')} - No text detected by EasyOCR]")
                 
                 combined_parts.append("\n" + "="*50 + "\n")
         
-        # Fallback to old method if ordered content not available
         else:
             for page_num in range(results['total_pages']):
                 page_parts = []
                 
-                # Add native text
                 if page_num < len(results.get('native_text', [])):
                     if isinstance(results['native_text'][page_num], dict):
-                        # New format with position info
                         simple_text = results['native_text'][page_num].get('simple_text', '')
                         if simple_text.strip():
                             page_parts.append("=== NATIVE TEXT ===")
                             page_parts.append(simple_text)
                     elif isinstance(results['native_text'][page_num], str):
-                        # Old format
                         if results['native_text'][page_num].strip():
                             page_parts.append("=== NATIVE TEXT ===")
                             page_parts.append(results['native_text'][page_num])
                 
-                # Add image OCR text
                 if (results.get('image_ocr_text') and 
                     page_num < len(results['image_ocr_text']) and 
                     results['image_ocr_text'][page_num].strip()):
                     page_parts.append("=== IMAGE OCR TEXT ===")
                     page_parts.append(results['image_ocr_text'][page_num])
                 
-                # Add fallback OCR text
                 if (results.get('fallback_ocr_text') and 
                     page_num < len(results['fallback_ocr_text']) and 
                     results['fallback_ocr_text'][page_num].strip()):
@@ -753,7 +554,6 @@ class PDFTextExtractor:
         
         output_path = self.output_dir / output_filename
         
-        # Create summary header
         summary = [
             f"PDF TEXT EXTRACTION REPORT",
             f"Source PDF: {results['pdf_path']}",
@@ -765,23 +565,34 @@ class PDFTextExtractor:
             ""
         ]
         
-        # Write to file
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(summary))
             f.write(results['combined_text'])
         
         self.logger.info(f"Extracted text saved to: {output_path}")
         return str(output_path)
+    
+    def cleanup_temp_files(self):
+        """
+        Clean up temporary image files.
+        """
+        try:
+            if self.temp_images_dir.exists():
+                import shutil
+                shutil.rmtree(self.temp_images_dir)
+                self.logger.info(f"Cleaned up temporary images directory: {self.temp_images_dir}")
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up temporary files: {e}")
 
 
 def main():
     """
-    Example usage of the PDF text extraction pipeline.
+    Example usage of the PDF text extraction pipeline with EasyOCR integration.
     """
-    # Initialize the extractor with Tesseract path
+    # Initialize the extractor with EasyOCR support (imported from image.py)
     extractor = PDFTextExtractor(
-        tesseract_path=r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-        output_dir="extracted_texts"
+        output_dir="extracted_texts",
+        use_easyocr=True  # Use EasyOCR class imported from image.py
     )
     
     # Example: Process a PDF file
@@ -789,8 +600,8 @@ def main():
     
     if os.path.exists(pdf_path):
         try:
-            # Extract text from PDF
-            results = extractor.process_pdf(pdf_path, use_fallback_ocr=True)
+            # Extract text from PDF using hybrid approach (native text + EasyOCR)
+            results = extractor.process_pdf(pdf_path, use_fallback_ocr=False, diagnose=True)
             
             # Save extracted text
             output_file = extractor.save_extracted_text(results)
@@ -801,8 +612,14 @@ def main():
             print(f"Images found and processed: {results['images_found']}")
             print(f"Total characters extracted: {len(results['combined_text'])}")
             
+            # Clean up temporary images
+            extractor.cleanup_temp_files()
+            print(f"Cleaned up temporary files")
+            
         except Exception as e:
             print(f"Error processing PDF: {e}")
+            import traceback
+            traceback.print_exc()
     else:
         print(f"PDF file not found: {pdf_path}")
         print("Please place a PDF file in the current directory and update the pdf_path variable.")
