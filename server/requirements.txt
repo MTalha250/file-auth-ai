@@ -44,3 +44,4 @@ torchvision==0.22.1
 typing-extensions==4.14.1
 urllib3==2.5.0
 PyMuPDF==1.26.3
+pdf2image==1.17.0
