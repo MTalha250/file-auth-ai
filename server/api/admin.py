@@ -72,7 +72,6 @@ class MLReferenceFileAdmin(ModelAdmin):
     fieldsets = (
         (None, {
             'fields': (
-                'ml_reference_id',
                 'file_name',
                 'file',
                 'category',
