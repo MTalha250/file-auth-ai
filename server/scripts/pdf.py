@@ -596,7 +596,7 @@ def main():
     )
     
     # Example: Process a PDF file
-    pdf_path = "sample.pdf"  # Replace with your PDF path
+    pdf_path = "pdf.pdf"  # Replace with your PDF path
     
     if os.path.exists(pdf_path):
         try:
