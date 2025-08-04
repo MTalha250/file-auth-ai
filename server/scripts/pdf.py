@@ -3,7 +3,7 @@ from PIL import Image
 import os
 import logging
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Any
 import io
 
 # Import EasyOCR extractor from image.py
@@ -495,11 +495,14 @@ class PDFTextExtractor:
                         img_data = block["content"]
                         ocr_text = img_data.get("ocr_text", "")
                         confidence = img_data.get("ocr_confidence", 0)
+                        image_index = img_data.get('index', '?')
+                        
                         if ocr_text.strip():
-                            combined_parts.append(f"\n[IMAGE {img_data.get('index', '?')} - EasyOCR Confidence: {confidence:.2f}]")
+                            combined_parts.append(f"\n[IMAGE {image_index} - EasyOCR Confidence: {confidence:.2f}]")
                             combined_parts.append(ocr_text)
+                            combined_parts.append(f"[IMAGE {image_index} END]")
                         else:
-                            combined_parts.append(f"\n[IMAGE {img_data.get('index', '?')} - No text detected by EasyOCR]")
+                            combined_parts.append(f"\n[IMAGE {image_index} - No text detected by EasyOCR]")
                 
                 combined_parts.append("\n" + "="*50 + "\n")
         
@@ -585,44 +588,66 @@ class PDFTextExtractor:
             self.logger.warning(f"Failed to clean up temporary files: {e}")
 
 
-def main():
+def process_pdf_file(pdf_path: str, output_dir: str = "extracted_texts", use_easyocr: bool = True, use_fallback_ocr: bool = True) -> Dict[str, Any]:
     """
-    Example usage of the PDF text extraction pipeline with EasyOCR integration.
+    Process a PDF file and extract all text content.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        output_dir: Directory to save extracted text files
+        use_easyocr: Whether to use EasyOCR for image text extraction
+        use_fallback_ocr: Whether to use full-page OCR as fallback
+        
+    Returns:
+        Dictionary containing extraction results and output file path
     """
     # Initialize the extractor with EasyOCR support (imported from image.py)
     extractor = PDFTextExtractor(
-        output_dir="extracted_texts",
-        use_easyocr=True  # Use EasyOCR class imported from image.py
+        output_dir=output_dir,
+        use_easyocr=use_easyocr
     )
     
-    # Example: Process a PDF file
-    pdf_path = "pdf.pdf"  # Replace with your PDF path
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
     
-    if os.path.exists(pdf_path):
-        try:
-            # Extract text from PDF using hybrid approach (native text + EasyOCR)
-            results = extractor.process_pdf(pdf_path, use_fallback_ocr=False, diagnose=True)
-            
-            # Save extracted text
-            output_file = extractor.save_extracted_text(results)
-            
-            print(f"Text extraction completed!")
-            print(f"Results saved to: {output_file}")
-            print(f"Total pages processed: {results['total_pages']}")
-            print(f"Images found and processed: {results['images_found']}")
-            print(f"Total characters extracted: {len(results['combined_text'])}")
-            
-            # Clean up temporary images
-            extractor.cleanup_temp_files()
-            print(f"Cleaned up temporary files")
-            
-        except Exception as e:
-            print(f"Error processing PDF: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print(f"PDF file not found: {pdf_path}")
-        print("Please place a PDF file in the current directory and update the pdf_path variable.")
+    try:
+        # Extract text from PDF using hybrid approach (native text + EasyOCR)
+        results = extractor.process_pdf(pdf_path, use_fallback_ocr=use_fallback_ocr, diagnose=True)
+        
+        # Save extracted text
+        output_file = extractor.save_extracted_text(results)
+        results['output_file'] = output_file
+        
+        print(f"PDF text extraction completed!")
+        print(f"Results saved to: {output_file}")
+        print(f"Total pages processed: {results['total_pages']}")
+        print(f"Images found and processed: {results['images_found']}")
+        print(f"Total characters extracted: {len(results['combined_text'])}")
+        
+        # Clean up temporary images
+        extractor.cleanup_temp_files()
+        print(f"Cleaned up temporary files")
+        
+        return results
+        
+    except Exception as e:
+        print(f"Error processing PDF: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def main():
+    """
+    Example usage of the PDF text extraction pipeline.
+    """
+    pdf_path = "sample2.pdf"  # Replace with your PDF path
+    
+    try:
+        results = process_pdf_file(pdf_path)
+        print("PDF processing completed successfully!")
+    except Exception as e:
+        print(f"PDF processing failed: {e}")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,8 @@ import numpy as np
 import os
 import argparse
 import json
-from typing import Dict
+from typing import Dict, Any
+from pathlib import Path
 
 class EasyOCRExtractor:
     def __init__(self, enable_gpu: bool = True):
@@ -53,6 +54,70 @@ class EasyOCRExtractor:
             }
         except Exception as e:
             return {'text': '', 'confidence': 0, 'error': str(e)}
+
+def process_image_file(image_path: str, output_dir: str = "extracted_texts", save_result: bool = True) -> Dict[str, Any]:
+    """
+    Process an image file and extract text using EasyOCR.
+    
+    Args:
+        image_path: Path to the image file
+        output_dir: Directory to save extracted text files
+        save_result: Whether to save the result to a file
+        
+    Returns:
+        Dictionary containing extraction results and output file path
+    """
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"Image file not found: {image_path}")
+    
+    try:
+        extractor = EasyOCRExtractor(enable_gpu=True)
+        result = extractor.extract_text(image_path)
+        
+        print(f"Image text extraction completed!")
+        print(f"Confidence: {result['confidence']:.2f}")
+        print(f"Words extracted: {result.get('word_count', 0)}")
+        print(f"Characters extracted: {len(result.get('text', ''))}")
+        
+        if 'error' in result:
+            print(f"Error: {result['error']}")
+            return result
+        
+        # Save result to file if requested
+        if save_result and result.get('text', '').strip():
+            output_dir_path = Path(output_dir)
+            output_dir_path.mkdir(exist_ok=True)
+            
+            image_name = Path(image_path).stem
+            output_filename = f"{image_name}_extracted_text.txt"
+            output_path = output_dir_path / output_filename
+            
+            # Create summary header
+            summary = [
+                f"IMAGE TEXT EXTRACTION REPORT",
+                f"Source Image: {image_path}",
+                f"Confidence: {result['confidence']:.2f}",
+                f"Words Extracted: {result.get('word_count', 0)}",
+                f"Total Characters: {len(result.get('text', ''))}",
+                "="*80,
+                ""
+            ]
+            
+            # Write to file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(summary))
+                f.write(result.get('text', ''))
+            
+            result['output_file'] = str(output_path)
+            print(f"Results saved to: {output_path}")
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 def main():
     parser = argparse.ArgumentParser(description='EasyOCR Text Extractor')
