@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "../../lib/api";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -12,7 +11,6 @@ import {
   LogOut,
   Check,
   AlertCircle,
-  Folder,
   Calendar,
   User,
   Download,
@@ -36,7 +34,6 @@ export default function DashboardPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [category, setCategory] = useState("");
-  const [caseId, setCaseId] = useState("");
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -93,7 +90,6 @@ export default function DashboardPage() {
     setError("");
 
     const formData = new FormData();
-    formData.append("case_id", caseId);
     formData.append("category", category);
     formData.append("file", file);
     formData.append("file_name", file.name);
@@ -196,25 +192,6 @@ export default function DashboardPage() {
 
               <CardContent className="space-y-6">
                 <div className="space-y-4">
-                  {/* Case ID Input */}
-                  <div className="space-y-2">
-                    <label
-                      htmlFor="caseId"
-                      className="text-sm font-medium text-slate-700 flex items-center space-x-2"
-                    >
-                      <Folder className="w-4 h-4" />
-                      <span>Case ID</span>
-                    </label>
-                    <Input
-                      id="caseId"
-                      placeholder="Enter case identifier"
-                      value={caseId}
-                      onChange={(e) => setCaseId(e.target.value)}
-                      required
-                      className="h-11 bg-white border-slate-200 focus:border-blue-500 focus:ring-blue-500/20"
-                    />
-                  </div>
-
                   {/* Category Selection */}
                   <div className="space-y-2">
                     <label
@@ -316,7 +293,7 @@ export default function DashboardPage() {
                     type="submit"
                     onClick={handleSubmit}
                     className="w-full h-11 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-medium rounded-lg shadow-lg hover:shadow-xl transform hover:scale-[1.02] transition-all duration-200"
-                    disabled={loading || !file || !category || !caseId}
+                    disabled={loading || !file || !category}
                   >
                     {loading ? (
                       <div className="flex items-center space-x-2">

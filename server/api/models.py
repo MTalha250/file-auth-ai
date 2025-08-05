@@ -85,7 +85,6 @@ class SubmittedFile(models.Model):
         ('N', 'No'),
     ]
     
-    case_id = models.CharField(max_length=50)
     file = CloudinaryField('submitted_file')
     file_name = models.CharField(max_length=255)
     category = models.CharField(
@@ -128,7 +127,7 @@ class SubmittedFile(models.Model):
     error_message = models.TextField(blank=True)
     
     def __str__(self):
-        return f"{self.case_id} - {self.file_name}"
+        return f"{self.file_name}"
     
     class Meta:
         verbose_name = "Submitted File"

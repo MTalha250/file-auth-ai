@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.models import User, Group
+from django.utils.html import format_html
 from unfold.admin import ModelAdmin
 from .models import UserProfile, CategorySchema, MLReferenceFile, SubmittedFile, AuditLog
 
@@ -72,7 +73,6 @@ class MLReferenceFileAdmin(ModelAdmin):
     fieldsets = (
         (None, {
             'fields': (
-                'ml_reference_id',
                 'file_name',
                 'file',
                 'category',
@@ -97,20 +97,19 @@ class MLReferenceFileAdmin(ModelAdmin):
 @admin.register(SubmittedFile)
 class SubmittedFileAdmin(ModelAdmin):
     list_display = (
-        'case_id', 'file_name', 'category',
+        'file_name', 'category', 'file_link',
         'final_category', 'accuracy_score', 'match', 'status', 'uploaded_at'
     )
-    search_fields = ('case_id', 'file_name')
+    search_fields = ('file_name',)
     list_filter = ('category', 'final_category', 'match', 'status', 'uploaded_at')
     readonly_fields = (
-        'case_id', 'file_name', 'file', 'category', 'final_category',
+        'file_name', 'file', 'category', 'final_category',
         'accuracy_score', 'match', 'extracted_fields', 'uploaded_by',
         'status', 'error_message', 'uploaded_at', 'processed_at'
     )
     fieldsets = (
         (None, {
             'fields': (
-                'case_id',
                 'file_name',
                 'file',
                 'category',
@@ -127,8 +126,31 @@ class SubmittedFileAdmin(ModelAdmin):
             'fields': ('uploaded_at', 'processed_at')
         }),
     )
-    list_display_links = ['case_id']
+    list_display_links = ['file_name']
     raw_id_fields = ['uploaded_by']
+    
+    def file_link(self, obj):
+        """Display the file as a clickable link with proper URL."""
+        if obj.file:
+            file_url = str(obj.file)
+            
+            # If it's already a full URL, use it
+            if file_url.startswith('http'):
+                url = file_url
+            else:
+                # Construct proper Cloudinary URL
+                if obj.file_name and '.' in obj.file_name:
+                    extension = obj.file_name.split('.')[-1].lower()
+                    if extension in ['doc', 'docx', 'pdf']:
+                        url = f"https://res.cloudinary.com/dewqsghdi/raw/upload/{file_url}"
+                    else:
+                        url = f"https://res.cloudinary.com/dewqsghdi/image/upload/{file_url}"
+                else:
+                    url = f"https://res.cloudinary.com/dewqsghdi/raw/upload/{file_url}"
+            
+            return format_html('<a href="{}" target="_blank">{}</a>', url, obj.file_name or 'View File')
+        return "No file"
+    file_link.short_description = 'File'
 
     def has_add_permission(self, request):
         """Prevent admins from creating SubmittedFile records."""

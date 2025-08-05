@@ -12,6 +12,7 @@ from django.utils import timezone
 from cloudinary.uploader import upload as cloudinary_upload
 import uuid
 import random
+import time
 
 from .models import (
     SubmittedFile,
@@ -119,23 +120,113 @@ def run_ai_analysis(submitted_file: SubmittedFile):
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
 def submit_file(request):
+    """
+    Upload and process submitted files for AI analysis.
+    
+    Handles document files (DOC, DOCX, PDF) using Cloudinary raw upload
+    to prevent ZIP processing errors. Automatically detects file types
+    and generates proper filenames with extensions.
+    
+    Expected fields:
+    - category: File category for classification
+    - file: The uploaded file
+    - file_name: Name of the file (auto-corrected if needed)
+    
+    Returns analysis results including accuracy score and match status.
+    """
     try:
-        case_id = request.data.get('case_id')
         category = request.data.get('category')
         file_obj = request.FILES.get('file')
         file_name = request.data.get('file_name')
 
-        if not all([case_id, category, file_obj, file_name]):
+        if not all([category, file_obj, file_name]):
             return Response({"error": "Missing required fields."}, status=400)
 
-        upload_result = cloudinary_upload(file_obj)
+        # Validate and clean filename
+        if not file_name or file_name.strip() == '':
+            return Response({"error": "File name cannot be empty."}, status=400)
+        
+        # Get proper filename from the uploaded file object
+        original_filename = getattr(file_obj, 'name', '')
+        
+        # Determine file type - try multiple approaches
+        file_extension = ''
+        if '.' in original_filename:
+            file_extension = original_filename.lower().split('.')[-1]
+        elif '.' in file_name:
+            file_extension = file_name.lower().split('.')[-1]
+        else:
+            # Try to detect from content type
+            content_type = getattr(file_obj, 'content_type', '')
+            if 'pdf' in content_type.lower():
+                file_extension = 'pdf'
+            elif 'word' in content_type.lower() or 'document' in content_type.lower():
+                file_extension = 'docx'
+        
+        # Create a proper filename
+        if original_filename and '.' in original_filename:
+            # Use the original filename if it's properly formatted
+            final_filename = original_filename
+        elif file_name and '.' in file_name and not file_name.lower() in ['pdf', 'doc', 'docx']:
+            # Use provided filename if it's properly formatted
+            final_filename = file_name
+        else:
+            # Generate a proper filename
+            timestamp = int(time.time())
+            if file_extension:
+                final_filename = f"document_{timestamp}.{file_extension}"
+            else:
+                final_filename = f"document_{timestamp}.pdf"  # Default to PDF
+                file_extension = 'pdf'
+        
+        # Generate unique identifier for file
+        timestamp = int(time.time())
+        unique_id = f"{timestamp}_{uuid.uuid4().hex[:8]}"
+        
+        try:
+            if file_extension in ['doc', 'docx', 'pdf']:
+                # For document files, use 'raw' resource type to prevent ZIP processing
+                public_id = f"submitted_files/{unique_id}_{final_filename}"
+                upload_result = cloudinary_upload(
+                    file_obj,
+                    resource_type="raw",
+                    public_id=public_id,
+                    overwrite=True
+                )
+            else:
+                # For images and other files, use auto detection
+                upload_result = cloudinary_upload(
+                    file_obj,
+                    folder="submitted_files",
+                    public_id=f"{unique_id}_{final_filename}",
+                    overwrite=True
+                )
+        except Exception as upload_error:
+            return Response({
+                "error": f"File upload failed: {str(upload_error)}"
+            }, status=400)
+            
         cloudinary_url = upload_result.get('secure_url')
+        
+        # For document files, ensure URL has proper file extension
+        if file_extension in ['doc', 'docx', 'pdf']:
+            # Always reconstruct the URL to ensure proper extension
+            base_url = "https://res.cloudinary.com/dewqsghdi"
+            version = upload_result.get('version', '')
+            if version:
+                cloudinary_url = f"{base_url}/raw/upload/v{version}/submitted_files/{unique_id}_{final_filename}"
+            else:
+                cloudinary_url = f"{base_url}/raw/upload/submitted_files/{unique_id}_{final_filename}"
+        
+        if not cloudinary_url:
+            return Response({
+                "error": "Failed to get upload URL from Cloudinary"
+            }, status=500)
 
         submitted_file = SubmittedFile.objects.create(
-            case_id=case_id,
             category=category,
             file=cloudinary_url,
-            file_name=file_name,
+            file_name=final_filename,
             uploaded_by=request.user,
             status='processing'
         )
@@ -154,6 +245,7 @@ def submit_file(request):
             user=request.user,
             submitted_file=submitted_file,
             details={
+                "file_name": final_filename,
                 "original_category": category,
                 "final_category": final_category,
                 "accuracy_score": score,
@@ -164,8 +256,7 @@ def submit_file(request):
         )
 
         return Response({
-            "file_name": file_name,
-            "case_id": case_id,
+            "file_name": final_filename,
             "original_category": category,
             "final_category": final_category,
             "accuracy_score": score,
@@ -189,6 +280,24 @@ def category_list(request):
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
 def upload_ml_reference(request):
+    """
+    Upload ML reference files for training and categorization.
+    
+    Restricted to admin users only. Handles document files (DOC, DOCX, PDF)
+    using Cloudinary raw upload to prevent ZIP processing errors.
+    Creates or updates category schemas as needed.
+    
+    Expected fields:
+    - ml_reference_id: Unique identifier (auto-generated if not provided)
+    - category: Category name for the reference
+    - description: Description of the reference file
+    - reasoning_notes: Explanation of why this file is a good reference
+    - metadata: Additional JSON metadata (optional)
+    - file: The uploaded reference file
+    - file_name: Name of the file (auto-corrected if needed)
+    
+    Returns success message with the reference ID.
+    """
     try:
         if request.user.userprofile.role != 'admin':
             return Response({"error": "Unauthorized"}, status=403)
@@ -204,8 +313,82 @@ def upload_ml_reference(request):
         if not all([category_name, description, reasoning_notes, file_obj, file_name]):
             return Response({"error": "Missing required fields."}, status=400)
 
-        upload_result = cloudinary_upload(file_obj)
+        # Validate and clean filename
+        if not file_name or file_name.strip() == '':
+            return Response({"error": "File name cannot be empty."}, status=400)
+        
+        # Get proper filename from the uploaded file object
+        original_filename = getattr(file_obj, 'name', '')
+        
+        # Determine file type - try multiple approaches
+        file_extension = ''
+        if '.' in original_filename:
+            file_extension = original_filename.lower().split('.')[-1]
+        elif '.' in file_name:
+            file_extension = file_name.lower().split('.')[-1]
+        else:
+            # Try to detect from content type
+            content_type = getattr(file_obj, 'content_type', '')
+            if 'pdf' in content_type.lower():
+                file_extension = 'pdf'
+            elif 'word' in content_type.lower() or 'document' in content_type.lower():
+                file_extension = 'docx'
+        
+        # Create a proper filename
+        if original_filename and '.' in original_filename:
+            # Use the original filename if it's properly formatted
+            final_filename = original_filename
+        elif file_name and '.' in file_name and not file_name.lower() in ['pdf', 'doc', 'docx']:
+            # Use provided filename if it's properly formatted
+            final_filename = file_name
+        else:
+            # Generate a proper filename
+            timestamp = int(time.time())
+            if file_extension:
+                final_filename = f"reference_{timestamp}.{file_extension}"
+            else:
+                final_filename = f"reference_{timestamp}.pdf"  # Default to PDF
+                file_extension = 'pdf'
+        
+        try:
+            if file_extension in ['doc', 'docx', 'pdf']:
+                # For document files, use 'raw' resource type to prevent ZIP processing
+                public_id = f"ml_references/{ml_reference_id}_{final_filename}"
+                upload_result = cloudinary_upload(
+                    file_obj,
+                    resource_type="raw",
+                    public_id=public_id,
+                    overwrite=True
+                )
+            else:
+                # For images and other files, use auto detection
+                upload_result = cloudinary_upload(
+                    file_obj,
+                    folder="ml_references",
+                    public_id=f"{ml_reference_id}_{final_filename}",
+                    overwrite=True
+                )
+        except Exception as upload_error:
+            return Response({
+                "error": f"File upload failed: {str(upload_error)}"
+            }, status=400)
+            
         cloudinary_url = upload_result.get('secure_url')
+        
+        # For document files, ensure URL has proper file extension
+        if file_extension in ['doc', 'docx', 'pdf']:
+            # Always reconstruct the URL to ensure proper extension
+            base_url = "https://res.cloudinary.com/dewqsghdi"
+            version = upload_result.get('version', '')
+            if version:
+                cloudinary_url = f"{base_url}/raw/upload/v{version}/ml_references/{ml_reference_id}_{final_filename}"
+            else:
+                cloudinary_url = f"{base_url}/raw/upload/ml_references/{ml_reference_id}_{final_filename}"
+        
+        if not cloudinary_url:
+            return Response({
+                "error": "Failed to get upload URL from Cloudinary"
+            }, status=500)
 
         category_obj, _ = CategorySchema.objects.get_or_create(
             category_name=category_name,
@@ -215,7 +398,7 @@ def upload_ml_reference(request):
         reference = MLReferenceFile.objects.create(
             ml_reference_id=ml_reference_id,
             file=cloudinary_url,
-            file_name=file_name,
+            file_name=final_filename,
             category=category_obj,
             description=description,
             reasoning_notes=reasoning_notes,
