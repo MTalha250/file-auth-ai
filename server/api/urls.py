@@ -13,4 +13,5 @@ urlpatterns = [
     path('v1/submit-file/', submit_file),
     path('v1/upload-ml-reference/', upload_ml_reference),
     path('v1/categories/', category_list),
+    
 ]

@@ -13,11 +13,19 @@ from cloudinary.uploader import upload as cloudinary_upload
 import uuid
 import random
 import time
-import os
-import requests
-import tempfile
-from django.conf import settings
-from scripts.universal_extractor import process_file_universal
+import re
+from django.db import transaction
+from rest_framework.exceptions import ValidationError
+from datetime import datetime
+import logging
+from scripts.universal_extractor import UniversalTextExtractor
+from rest_framework.parsers import JSONParser
+logger = logging.getLogger(__name__)
+from .serializers import (
+    SubmittedFileSerializer, 
+    
+    
+)
 from .models import (
     SubmittedFile,
     MLReferenceFile,
@@ -426,206 +434,168 @@ def upload_ml_reference(request):
         return Response({"error": str(e)}, status=500)
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
-@parser_classes([MultiPartParser, FormParser])
+#@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
 def submit_file(request):
     """
-    Upload and process submitted files for AI analysis and universal text extraction.
+    Accepts a Cloudinary file URL from the frontend, processes it with UniversalTextExtractor,
+    and saves results to SubmittedFile and ProcessedFile models.
     
-    Handles document files (DOC, DOCX, PDF, images) using Cloudinary raw upload.
-    Processes files with the universal extractor and stores results.
+    Expected JSON payload:
+    - file: Cloudinary file URL (required)
+    - category: File category (optional, defaults to 'unknown')
+    - metadata: Additional JSON metadata (optional)
     
-    Expected fields:
-    - category: File category for classification
-    - file: The uploaded file
-    - file_name: Name of the file (auto-corrected if needed)
-    
-    Returns analysis results including accuracy score, match status, and extracted text.
+    Returns:
+    - SubmittedFile data with processing results, including extracted text and metadata
     """
     try:
-        category = request.data.get('category')
-        file_obj = request.FILES.get('file')
-        file_name = request.data.get('file_name')
+        # Extract and validate input
+        file_url = request.data.get('file')
+        category_name = request.data.get('category', 'unknown')
+        metadata = request.data.get('metadata', {})
 
-        if not all([category, file_obj, file_name]):
-            return Response({"error": "Missing required fields."}, status=400)
+        if not file_url:
+            return Response({"error": "No file URL provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Validate and clean filename
-        if not file_name or file_name.strip() == '':
-            return Response({"error": "File name cannot be empty."}, status=400)
-        
-        # Get proper filename from the uploaded file object
-        original_filename = getattr(file_obj, 'name', '')
-        
-        # Determine file type
-        file_extension = ''
-        if '.' in original_filename:
-            file_extension = original_filename.lower().split('.')[-1]
-        elif '.' in file_name:
-            file_extension = file_name.lower().split('.')[-1]
-        else:
-            content_type = getattr(file_obj, 'content_type', '')
-            if 'pdf' in content_type.lower():
-                file_extension = 'pdf'
-            elif 'word' in content_type.lower() or 'document' in content_type.lower():
-                file_extension = 'docx'
-            elif 'image' in content_type.lower():
-                file_extension = 'jpg'
-        
-        # Create a proper filename
-        if original_filename and '.' in original_filename:
-            final_filename = original_filename
-        elif file_name and '.' in file_name and not file_name.lower() in ['pdf', 'doc', 'docx']:
-            final_filename = file_name
-        else:
-            timestamp = int(time.time())
-            if file_extension:
-                final_filename = f"document_{timestamp}.{file_extension}"
-            else:
-                final_filename = f"document_{timestamp}.pdf"
-                file_extension = 'pdf'
-        
-        # Generate unique identifier for file
-        timestamp = int(time.time())
-        unique_id = f"{timestamp}_{uuid.uuid4().hex[:8]}"
-        
-        # Upload to Cloudinary
-        try:
-            if file_extension in ['doc', 'docx', 'pdf']:
-                public_id = f"submitted_files/{unique_id}_{final_filename}"
-                upload_result = cloudinary_upload(
-                    file_obj,
-                    resource_type="raw",
-                    public_id=public_id,
-                    overwrite=True
-                )
-            else:
-                upload_result = cloudinary_upload(
-                    file_obj,
-                    folder="submitted_files",
-                    public_id=f"{unique_id}_{final_filename}",
-                    overwrite=True
-                )
-        except Exception as upload_error:
-            return Response({
-                "error": f"File upload failed: {str(upload_error)}"
-            }, status=400)
-            
-        cloudinary_url = upload_result.get('secure_url')
-        
-        # Reconstruct URL for documents
-        if file_extension in ['doc', 'docx', 'pdf']:
-            base_url = "https://res.cloudinary.com/dewqsghdi"
-            version = upload_result.get('version', '')
-            if version:
-                cloudinary_url = f"{base_url}/raw/upload/v{version}/submitted_files/{unique_id}_{final_filename}"
-            else:
-                cloudinary_url = f"{base_url}/raw/upload/submitted_files/{unique_id}_{final_filename}"
-        
-        if not cloudinary_url:
-            return Response({
-                "error": "Failed to get upload URL from Cloudinary"
-            }, status=500)
+        # Validate URL format (basic check for Cloudinary or similar URL)
+        if not re.match(r'^https?://[^\s/$.?#].[^\s]*$', file_url):
+            return Response({"error": "Invalid file URL format"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create SubmittedFile instance
-        submitted_file = SubmittedFile.objects.create(
-            category=category,
-            file=cloudinary_url,
-            file_name=final_filename,
-            uploaded_by=request.user,
-            status='processing'
-        )
+        # Extract file name from URL
+        file_name = file_url.split('/')[-1].split('?')[0]
+        if not file_name:
+            return Response({"error": "Could not extract file name from URL"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Run existing AI analysis
-        score, matched, final_category, extracted = run_ai_analysis(submitted_file)
-        submitted_file.accuracy_score = score
-        submitted_file.match = matched
-        submitted_file.final_category = final_category
-        submitted_file.extracted_fields = extracted
-        submitted_file.status = 'completed'
-        submitted_file.processed_at = timezone.now()
-        submitted_file.save()
+        # Validate category
+        category_obj = CategorySchema.objects.filter(category_name=category_name).first()
+        if not category_obj:
+            return Response({"error": f"Invalid category: {category_name}"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Process with UniversalTextExtractor
-        try:
-            # Download file to temporary location
-            temp_dir = tempfile.mkdtemp()
-            temp_file_path = os.path.join(temp_dir, final_filename)
-            response = requests.get(cloudinary_url, timeout=120)
-            response.raise_for_status()
-            
-            with open(temp_file_path, 'wb') as temp_file:
-                temp_file.write(response.content)
-
-            # Process file with universal extractor
-            extractor_results = process_file_universal(
-                file_input=temp_file_path,
-                output_dir=os.path.join(settings.BASE_DIR, 'extracted_texts'),
-                use_ocr=True,
-                enable_gpu=True
+        # Create SubmittedFile record
+        with transaction.atomic():
+            submitted_file = SubmittedFile.objects.create(
+                file=file_url,
+                file_name=file_name,
+                category=category_name,  # Store as CharField per your model
+                uploaded_by=request.user,
+                status='processing',
+                extracted_fields={}
             )
 
-            # Clean up temporary file
-            try:
-                os.remove(temp_file_path)
-                os.rmdir(temp_dir)
-            except Exception as cleanup_error:
-                print(f"Warning: Failed to clean up temporary files: {cleanup_error}")
-
-            # Create ProcessedFile instance
-            processed_file = ProcessedFile.objects.create(
+            # Create AuditLog for upload
+            AuditLog.objects.create(
+                action='upload',
+                user=request.user,
                 submitted_file=submitted_file,
-                extracted_text=extractor_results.get('text', '') + extractor_results.get('ocr_text', ''),
-                extracted_metadata={
-                    'file_type': extractor_results.get('file_type', 'unknown'),
-                    'method': extractor_results.get('method', 'unknown'),
-                    'pages': extractor_results.get('pages', 0),
-                    'images_found': extractor_results.get('images_found', 0),
-                    'images_processed': extractor_results.get('images_processed', 0),
-                    'confidence': extractor_results.get('confidence', 0),
-                    'output_file': extractor_results.get('output_file', ''),
+                details={
+                    'category': category_name,
+                    'file_url': file_url,
+                    'file_name': file_name,
+                    'metadata': metadata
                 },
-                status='completed' if 'error' not in extractor_results else 'failed',
-                error_message=extractor_results.get('error', '')
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT')
             )
 
-        except Exception as extractor_error:
-            processed_file = ProcessedFile.objects.create(
-                submitted_file=submitted_file,
-                extracted_text='',
-                extracted_metadata={},
-                status='failed',
-                error_message=str(extractor_error)
-            )
-            print(f"Extractor error: {extractor_error}")
+            try:
+                # Initialize UniversalTextExtractor
+                extractor = UniversalTextExtractor(
+                    output_dir="extracted_texts",
+                    use_ocr=True,
+                    enable_gpu=True
+                )
 
-        # Create audit log
-        AuditLog.objects.create(
-            action='analysis',
-            user=request.user,
-            submitted_file=submitted_file,
-            details={
-                "file_name": final_filename,
-                "original_category": category,
-                "final_category": final_category,
-                "accuracy_score": score,
-                "match": matched,
-                "extractor_status": processed_file.status,
-                "extractor_error": processed_file.error_message
-            },
-            ip_address=request.META.get('REMOTE_ADDR'),
-            user_agent=request.META.get('HTTP_USER_AGENT')
-        )
+                # Process the file URL
+                extraction_results = extractor.process_file(file_url)
+                if 'error' in extraction_results:
+                    raise ValueError(f"Extraction failed: {extraction_results['error']}")
 
-        return Response({
-            "file_name": final_filename,
-            "original_category": category,
-            "final_category": final_category,
-            "accuracy_score": score,
-            "match": matched,
-            "extracted_text": processed_file.extracted_text,
-            "extracted_metadata": processed_file.extracted_metadata
-        }, status=200)
+                # Run AI analysis
+                accuracy_score, match, final_category, extracted_fields = run_ai_analysis(submitted_file)
+
+                # Update SubmittedFile with processing results
+                submitted_file.status = 'completed'
+                submitted_file.processed_at = timezone.now()
+                submitted_file.accuracy_score = accuracy_score
+                submitted_file.match = match
+                submitted_file.final_category = final_category
+                submitted_file.extracted_fields = extracted_fields
+                submitted_file.save()
+
+                # Create ProcessedFile record
+                processed_file = ProcessedFile.objects.create(
+                    submitted_file=submitted_file,
+                    extracted_text=extraction_results.get('text', ''),
+                    extracted_metadata={
+                        'pages': extraction_results.get('pages', 0),
+                        'images_found': extraction_results.get('images_found', 0),
+                        'images_processed': extraction_results.get('images_processed', 0),
+                        'method': extraction_results.get('method', 'unknown'),
+                        'file_type': extraction_results.get('file_type', 'unknown')
+                    },
+                    status='completed'
+                )
+
+                # Create AuditLog for analysis
+                AuditLog.objects.create(
+                    action='analysis',
+                    user=request.user,
+                    submitted_file=submitted_file,
+                    details={
+                        'final_category': final_category,
+                        'accuracy_score': accuracy_score,
+                        'match': match,
+                        'extracted_fields': list(extracted_fields.keys()),
+                        'extractor_metadata': extraction_results.get('extracted_metadata', {})
+                    },
+                    ip_address=request.META.get('REMOTE_ADDR'),
+                    user_agent=request.META.get('HTTP_USER_AGENT')
+                )
+
+                # Serialize and return response
+                serializer = SubmittedFileSerializer(submitted_file)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+            except Exception as processing_error:
+                logger.error(f"File processing failed for {file_url}: {str(processing_error)}", exc_info=True)
+                submitted_file.status = 'failed'
+                submitted_file.error_message = str(processing_error)
+                submitted_file.processed_at = timezone.now()
+                submitted_file.save()
+
+                ProcessedFile.objects.create(
+                    submitted_file=submitted_file,
+                    status='failed',
+                    error_message=str(processing_error)
+                )
+
+                AuditLog.objects.create(
+                    action='file_processing_failed',
+                    user=request.user,
+                    submitted_file=submitted_file,
+                    details={
+                        'error': str(processing_error),
+                        'category': category_name,
+                        'file_name': file_name,
+                        'file_url': file_url
+                    },
+                    ip_address=request.META.get('REMOTE_ADDR'),
+                    user_agent=request.META.get('HTTP_USER_AGENT')
+                )
+
+                return Response(
+                    {"error": f"File processing failed: {str(processing_error)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+    except ValidationError as ve:
+        logger.error(f"Validation error: {str(ve)}")
+        return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
 
     except Exception as e:
-        return Response({"error": str(e)}, status=500)
+        logger.error(f"Unexpected error in file submission: {str(e)}", exc_info=True)
+        return Response(
+            {"error": "An unexpected error occurred during file submission"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

@@ -6,6 +6,22 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'username', 'email']
+class ProcessedFileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProcessedFile
+        fields = ['extracted_text', 'extracted_metadata', 'processed_at', 'status', 'error_message']
+
+class SubmittedFileSerializer(serializers.ModelSerializer):
+    uploaded_by = UserSerializer(read_only=True)
+    processed_file = ProcessedFileSerializer(read_only=True)
+
+    class Meta:
+        model = SubmittedFile
+        fields = [
+            'id', 'file', 'file_name', 'category', 'final_category',
+            'uploaded_by', 'uploaded_at', 'accuracy_score', 'match', 'extracted_fields',
+            'status', 'processed_at', 'error_message', 'processed_file'
+        ]        
 
 class UserProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
@@ -30,22 +46,7 @@ class MLReferenceFileSerializer(serializers.ModelSerializer):
             'id', 'ml_reference_id', 'file', 'file_name', 'category', 'description',
             'reasoning_notes', 'metadata', 'uploaded_by', 'uploaded_at'
         ]
-class ProcessedFileSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProcessedFile
-        fields = ['extracted_text', 'extracted_metadata', 'processed_at', 'status', 'error_message']
 
-class SubmittedFileSerializer(serializers.ModelSerializer):
-    uploaded_by = UserSerializer(read_only=True)
-    processed_file = ProcessedFileSerializer(read_only=True)
-
-    class Meta:
-        model = SubmittedFile
-        fields = [
-            'id', 'file', 'file_name', 'category', 'final_category',
-            'uploaded_by', 'uploaded_at', 'accuracy_score', 'match', 'extracted_fields',
-            'status', 'processed_at', 'error_message', 'processed_file'
-        ]        
 
 class AuditLogSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
