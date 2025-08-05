@@ -194,3 +194,38 @@ def save_user_profile(sender, instance, **kwargs):
         instance.userprofile.save()
     else:
         UserProfile.objects.create(user=instance)
+
+
+
+class ProcessedFile(models.Model):
+    submitted_file = models.OneToOneField(
+        SubmittedFile,
+        on_delete=models.CASCADE,
+        related_name='processed_file'
+    )
+    extracted_text = models.TextField(
+        blank=True,
+        help_text="Text extracted by the universal extractor"
+    )
+    extracted_metadata = models.JSONField(
+        default=dict,
+        help_text="Metadata from universal extractor (e.g., pages, images processed)"
+    )
+    processed_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('completed', 'Completed'),
+            ('failed', 'Failed'),
+        ],
+        default='completed'
+    )
+    error_message = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"Processed: {self.submitted_file.file_name}"
+
+    class Meta:
+        verbose_name = "Processed File"
+        verbose_name_plural = "Processed Files"
+        ordering = ['-processed_at']
