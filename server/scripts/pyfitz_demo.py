@@ -2049,7 +2049,7 @@ class PDFTextExtractor:
 def main():
     # Set your Tesseract path if needed
     tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    file_path = "C:/Users/T14s/Desktop/File auth/extracted_texts/extracted_images/docx_img20_image18.png"  # Change this to your file (PDF or image)
+    file_path = "https://res.cloudinary.com/dewqsghdi/image/upload/v1741963429/TIT-Immobilier/aj4n1h6twn3mikr9731c.pdf"  # Change this to your file (PDF or image)
     ext = os.path.splitext(file_path)[1].lower()
     if ext == '.pdf':
         print(f"\n[PDF Mode] Processing: {file_path}")
