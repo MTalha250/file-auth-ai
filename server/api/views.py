@@ -14,7 +14,9 @@ import uuid
 import random
 import time
 import re
+from .rag_utils import ingest_new_text_file
 from django.db import transaction
+import tempfile
 from rest_framework.exceptions import ValidationError
 from datetime import datetime
 import logging
@@ -511,6 +513,20 @@ def submit_file(request):
                 if 'error' in extraction_results:
                     raise ValueError(f"Extraction failed: {extraction_results['error']}")
 
+                # ADD THIS: Ingest extracted text into RAG system
+                # Save extracted text to a temporary file
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                    f.write(extraction_results.get('text', ''))
+                    temp_text_file = f.name
+
+                # Ingest into RAG
+                doc_id = ingest_new_text_file(temp_text_file, f"doc_{submitted_file.id}")
+
+                # Clean up temp file
+                import os
+                os.unlink(temp_text_file)
+
+                
                 # Run AI analysis
                 accuracy_score, match, final_category, extracted_fields = run_ai_analysis(submitted_file)
 
@@ -599,3 +615,29 @@ def submit_file(request):
             {"error": "An unexpected error occurred during file submission"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+def ask_rag_question(request):
+    """Handle RAG questions from frontend"""
+    try:
+        question = request.data.get('question')
+        if not question:
+            return Response({"error": "No question provided"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Import your RAG function
+        from .rag_utils import rag_chat
+        
+        # Get response from RAG system
+        response = rag_chat(question)
+        
+        return Response({
+            "answer": response['answer'],
+            "sources": response['doc_sources'],
+            "confidence": response['evaluation']
+        })
+        
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

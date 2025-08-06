@@ -1,4 +1,5 @@
 "use client";
+import { MessageSquare } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "../../lib/api";
@@ -38,6 +39,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
+  const [chatQuestion, setChatQuestion] = useState("");
+  const [chatHistory, setChatHistory] = useState<Array<{question: string, answer: string}>>([]);
+const [chatLoading, setChatLoading] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(
     null
   );
@@ -105,6 +109,28 @@ export default function DashboardPage() {
       );
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleAskQuestion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatQuestion.trim()) return;
+    
+    setChatLoading(true);
+    try {
+      const response = await api.post("/api/v1/ask-rag-question/", {
+        question: chatQuestion
+      });
+      
+      setChatHistory(prev => [...prev, {
+        question: chatQuestion,
+        answer: response.data.answer
+      }]);
+      setChatQuestion("");
+    } catch (error: any) {
+      setError(error?.response?.data?.error || "Failed to get answer");
+    } finally {
+      setChatLoading(false);
     }
   };
 
@@ -342,6 +368,46 @@ export default function DashboardPage() {
                 </CardContent>
               </Card>
             )}
+
+            {/* Chat Interface */}
+            <Card className="backdrop-blur-sm bg-white/80 shadow-xl border-0 ring-1 ring-slate-200/50">
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2 text-slate-800">
+                  <MessageSquare className="w-5 h-5" />
+                  <span>Ask Questions About Your Documents</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {/* Chat messages display */}
+                <div className="space-y-4 mb-4 max-h-96 overflow-y-auto">
+                  {chatHistory.map((msg, index) => (
+                    <div key={index} className="space-y-2">
+                      <div className="bg-blue-50 p-3 rounded-lg">
+                        <strong>Q:</strong> {msg.question}
+                      </div>
+                      <div className="bg-green-50 p-3 rounded-lg">
+                        <strong>A:</strong> {msg.answer}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                
+                {/* Question input */}
+                <form onSubmit={handleAskQuestion} className="flex space-x-2">
+                  <input
+                    type="text"
+                    value={chatQuestion}
+                    onChange={(e) => setChatQuestion(e.target.value)}
+                    placeholder="Ask a question about your documents..."
+                    className="flex-1 p-2 border rounded-lg"
+                    disabled={chatLoading}
+                  />
+                  <Button type="submit" disabled={chatLoading}>
+                    {chatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Ask"}
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
           </div>
 
           {/* Sidebar */}
