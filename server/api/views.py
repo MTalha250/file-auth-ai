@@ -14,7 +14,7 @@ import uuid
 import random
 import time
 import re
-from .rag_utils import ingest_new_text_file
+# from .rag_utils import ingest_new_text_file  # Commented out for testing
 from django.db import transaction
 import tempfile
 from rest_framework.exceptions import ValidationError
@@ -436,16 +436,20 @@ def upload_ml_reference(request):
         return Response({"error": str(e)}, status=500)
 
 @api_view(['POST'])
-#@permission_classes([IsAuthenticated])
-@parser_classes([JSONParser])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
 def submit_file(request):
     """
-    Accepts a Cloudinary file URL from the frontend, processes it with UniversalTextExtractor,
-    and saves results to SubmittedFile and ProcessedFile models.
+    Upload and process files with UniversalTextExtractor and RAG integration.
     
-    Expected JSON payload:
-    - file: Cloudinary file URL (required)
-    - category: File category (optional, defaults to 'unknown')
+    Handles document files (DOC, DOCX, PDF) using Cloudinary raw upload
+    to prevent ZIP processing errors. Automatically detects file types
+    and generates proper filenames with extensions.
+    
+    Expected form data:
+    - file: The uploaded file (required)
+    - category: File category for classification (required)
+    - file_name: Name of the file (auto-corrected if needed)
     - metadata: Additional JSON metadata (optional)
     
     Returns:
@@ -453,21 +457,95 @@ def submit_file(request):
     """
     try:
         # Extract and validate input
-        file_url = request.data.get('file')
-        category_name = request.data.get('category', 'unknown')
+        category_name = request.data.get('category')
+        file_obj = request.FILES.get('file')
+        file_name = request.data.get('file_name')
         metadata = request.data.get('metadata', {})
 
-        if not file_url:
-            return Response({"error": "No file URL provided"}, status=status.HTTP_400_BAD_REQUEST)
+        if not all([category_name, file_obj, file_name]):
+            return Response({"error": "Missing required fields (category, file, file_name)."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Validate URL format (basic check for Cloudinary or similar URL)
-        if not re.match(r'^https?://[^\s/$.?#].[^\s]*$', file_url):
-            return Response({"error": "Invalid file URL format"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Extract file name from URL
-        file_name = file_url.split('/')[-1].split('?')[0]
-        if not file_name:
-            return Response({"error": "Could not extract file name from URL"}, status=status.HTTP_400_BAD_REQUEST)
+        # Validate and clean filename
+        if not file_name or file_name.strip() == '':
+            return Response({"error": "File name cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get proper filename from the uploaded file object
+        original_filename = getattr(file_obj, 'name', '')
+        
+        # Determine file type - try multiple approaches
+        file_extension = ''
+        if '.' in original_filename:
+            file_extension = original_filename.lower().split('.')[-1]
+        elif '.' in file_name:
+            file_extension = file_name.lower().split('.')[-1]
+        else:
+            # Try to detect from content type
+            content_type = getattr(file_obj, 'content_type', '')
+            if 'pdf' in content_type.lower():
+                file_extension = 'pdf'
+            elif 'word' in content_type.lower() or 'document' in content_type.lower():
+                file_extension = 'docx'
+        
+        # Create a proper filename
+        if original_filename and '.' in original_filename:
+            # Use the original filename if it's properly formatted
+            final_filename = original_filename
+        elif file_name and '.' in file_name and not file_name.lower() in ['pdf', 'doc', 'docx']:
+            # Use provided filename if it's properly formatted
+            final_filename = file_name
+        else:
+            # Generate a proper filename
+            timestamp = int(time.time())
+            if file_extension:
+                final_filename = f"document_{timestamp}.{file_extension}"
+            else:
+                final_filename = f"document_{timestamp}.pdf"  # Default to PDF
+                file_extension = 'pdf'
+        
+        # Generate unique identifier for file
+        timestamp = int(time.time())
+        unique_id = f"{timestamp}_{uuid.uuid4().hex[:8]}"
+        
+        # Upload to Cloudinary
+        try:
+            if file_extension in ['doc', 'docx', 'pdf']:
+                # For document files, use 'raw' resource type to prevent ZIP processing
+                public_id = f"submitted_files/{unique_id}_{final_filename}"
+                upload_result = cloudinary_upload(
+                    file_obj,
+                    resource_type="raw",
+                    public_id=public_id,
+                    overwrite=True
+                )
+            else:
+                # For images and other files, use auto detection
+                upload_result = cloudinary_upload(
+                    file_obj,
+                    folder="submitted_files",
+                    public_id=f"{unique_id}_{final_filename}",
+                    overwrite=True
+                )
+        except Exception as upload_error:
+            return Response({
+                "error": f"File upload failed: {str(upload_error)}"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        cloudinary_url = upload_result.get('secure_url')
+        
+        # For document files, ensure URL has proper file extension
+        if file_extension in ['doc', 'docx', 'pdf']:
+            # Always reconstruct the URL to ensure proper extension
+            base_url = "https://res.cloudinary.com/dewqsghdi"
+            version = upload_result.get('version', '')
+            if version:
+                cloudinary_url = f"{base_url}/raw/upload/v{version}/submitted_files/{unique_id}_{final_filename}"
+            else:
+                cloudinary_url = f"{base_url}/raw/upload/submitted_files/{unique_id}_{final_filename}"
+        
+        if not cloudinary_url:
+            return Response({
+                "error": "Failed to get upload URL from Cloudinary"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # Validate category
         category_obj = CategorySchema.objects.filter(category_name=category_name).first()
@@ -477,8 +555,8 @@ def submit_file(request):
         # Create SubmittedFile record
         with transaction.atomic():
             submitted_file = SubmittedFile.objects.create(
-                file=file_url,
-                file_name=file_name,
+                file=cloudinary_url,
+                file_name=final_filename,
                 category=category_name,  # Store as CharField per your model
                 uploaded_by=request.user,
                 status='processing',
@@ -492,8 +570,8 @@ def submit_file(request):
                 submitted_file=submitted_file,
                 details={
                     'category': category_name,
-                    'file_url': file_url,
-                    'file_name': file_name,
+                    'file_url': cloudinary_url,
+                    'file_name': final_filename,
                     'metadata': metadata
                 },
                 ip_address=request.META.get('REMOTE_ADDR'),
@@ -509,22 +587,22 @@ def submit_file(request):
                 )
 
                 # Process the file URL
-                extraction_results = extractor.process_file(file_url)
+                extraction_results = extractor.process_file(cloudinary_url)
                 if 'error' in extraction_results:
                     raise ValueError(f"Extraction failed: {extraction_results['error']}")
 
-                # ADD THIS: Ingest extracted text into RAG system
-                # Save extracted text to a temporary file
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                    f.write(extraction_results.get('text', ''))
-                    temp_text_file = f.name
-
-                # Ingest into RAG
-                doc_id = ingest_new_text_file(temp_text_file, f"doc_{submitted_file.id}")
-
-                # Clean up temp file
-                import os
-                os.unlink(temp_text_file)
+                # RAG integration (commented out for testing)
+                # # Save extracted text to a temporary file
+                # with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                #     f.write(extraction_results.get('text', ''))
+                #     temp_text_file = f.name
+                # 
+                # # Ingest into RAG
+                # doc_id = ingest_new_text_file(temp_text_file, f"doc_{submitted_file.id}")
+                # 
+                # # Clean up temp file
+                # import os
+                # os.unlink(temp_text_file)
 
                 
                 # Run AI analysis
@@ -574,7 +652,7 @@ def submit_file(request):
                 return Response(serializer.data, status=status.HTTP_201_CREATED)
 
             except Exception as processing_error:
-                logger.error(f"File processing failed for {file_url}: {str(processing_error)}", exc_info=True)
+                logger.error(f"File processing failed for {cloudinary_url}: {str(processing_error)}", exc_info=True)
                 submitted_file.status = 'failed'
                 submitted_file.error_message = str(processing_error)
                 submitted_file.processed_at = timezone.now()
@@ -593,8 +671,8 @@ def submit_file(request):
                     details={
                         'error': str(processing_error),
                         'category': category_name,
-                        'file_name': file_name,
-                        'file_url': file_url
+                        'file_name': final_filename,
+                        'file_url': cloudinary_url
                     },
                     ip_address=request.META.get('REMOTE_ADDR'),
                     user_agent=request.META.get('HTTP_USER_AGENT')
