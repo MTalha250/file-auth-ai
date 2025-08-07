@@ -40,8 +40,10 @@ export default function DashboardPage() {
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [chatQuestion, setChatQuestion] = useState("");
-  const [chatHistory, setChatHistory] = useState<Array<{question: string, answer: string}>>([]);
-const [chatLoading, setChatLoading] = useState(false);
+  const [chatHistory, setChatHistory] = useState<
+    Array<{ question: string; answer: string }>
+  >([]);
+  const [chatLoading, setChatLoading] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(
     null
   );
@@ -115,17 +117,28 @@ const [chatLoading, setChatLoading] = useState(false);
   const handleAskQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatQuestion.trim()) return;
-    
+
     setChatLoading(true);
     try {
       const response = await api.post("/api/v1/ask-rag-question/", {
-        question: chatQuestion
-      });
-      
-      setChatHistory(prev => [...prev, {
         question: chatQuestion,
-        answer: response.data.answer
-      }]);
+      });
+
+      // Safely extract answer from response.data of unknown type
+      let answer = "";
+      if (response && typeof response === "object" && "data" in response) {
+        const data = (response as any).data;
+        if (data && typeof data === "object" && "answer" in data) {
+          answer = (data as any).answer;
+        }
+      }
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          question: chatQuestion,
+          answer,
+        },
+      ]);
       setChatQuestion("");
     } catch (error: any) {
       setError(error?.response?.data?.error || "Failed to get answer");
@@ -391,7 +404,7 @@ const [chatLoading, setChatLoading] = useState(false);
                     </div>
                   ))}
                 </div>
-                
+
                 {/* Question input */}
                 <form onSubmit={handleAskQuestion} className="flex space-x-2">
                   <input
@@ -403,7 +416,11 @@ const [chatLoading, setChatLoading] = useState(false);
                     disabled={chatLoading}
                   />
                   <Button type="submit" disabled={chatLoading}>
-                    {chatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Ask"}
+                    {chatLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      "Ask"
+                    )}
                   </Button>
                 </form>
               </CardContent>
