@@ -55,18 +55,19 @@ CONFIG = {
     "retrieval_k": 10
 }
 
-# Set your Pinecone API key (only one API key needed now!)
-PINECONE_API_KEY = "pcsk_6m2PRg_1qqfqLoS7ZEfXyacwJzrjwkKaQUA5aW3VQjV7wVoMfLH7S8MYZPG2sD5QaVeSE"
+# Set your Pinecone API key from environment variables
+PINECONE_API_KEY = os.getenv('PINECONE_API_KEY')
 
 # Check if GPU is available
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🔧 Using device: {device}")
 
 # Verify API key
-if not PINECONE_API_KEY or PINECONE_API_KEY == "your_pinecone_api_key_here":
-    print("⚠️ Please set your PINECONE_API_KEY")
+if not PINECONE_API_KEY:
+    print("⚠️ Please set your PINECONE_API_KEY environment variable")
+    print("   Add PINECONE_API_KEY=your_api_key_here to your .env file")
 else:
-    print("✅ Pinecone API key configured")
+    print("✅ Pinecone API key configured from environment variables")
 
 print(f"🎯 Models selected:")
 print(f"  Embedding: {CONFIG['embedding_model']}")
